@@ -6,8 +6,7 @@ import datetime
 from time import sleep
 
 
-def access_bird_api():
-    
+def access_bird_api_30():
     
     #Oakland center latitude
     lat = 37.808136
@@ -41,9 +40,8 @@ def access_bird_api():
         data['birds'][j]['time'] = now
 
     bird_df = pd.DataFrame.from_records(data['birds'])
-    print(bird_df)
     with open('bird_data.csv', mode='a') as f:
-        f.write(bird_df.to_csv(header=True))
+        f.write(bird_df.to_csv(header=True, index=False))
     
     for i in range(len(lat_long)):
             sleep(4)
@@ -60,9 +58,8 @@ def access_bird_api():
                 data['birds'][j]['time'] = now
 
             bird_df = pd.DataFrame.from_records(data['birds'])
-            print(bird_df)
             with open('bird_data.csv', mode='a') as f:
-                f.write(bird_df.to_csv(header=False))
+                f.write(bird_df.to_csv(header=False, index=False))
     
     
     
@@ -80,8 +77,8 @@ def access_bird_api():
                 data['birds'][j]['time'] = now
 
             bird_df = pd.DataFrame.from_records(data['birds'])
-            print(bird_df)
             with open('bird_data.csv', mode='a') as f:
-                f.write(bird_df.to_csv(header=False))
-                
+                f.write(bird_df.to_csv(header=False, index=False))
+        print ('all 30 locations have been written to the csv {}'.format(now))
+        
 access_bird_api()
