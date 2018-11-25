@@ -2,43 +2,114 @@ import json
 import ast
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
-import matplotlib as mpl
-import folium
-from folium.plugins import MarkerCluster
 import datetime
 
-from sklearn.model_selection import train_test_split
-from sklearn.linear_model import LinearRegression
-from sklearn.model_selection import TimeSeriesSplit
 
 
-def get_data():
 
-    df = pd.read_csv('bird_data.csv')
-    df.drop(['code', 'captive'], axis=1, inplace=True)
+def get_data(n=40000):
+    '''
+    Gets data from a csv and cleans it
+    
+    '''
+    
+    
+    df = pd.read_csv('bird_data-nov19.csv')
+    df.drop(['code', 'captive', 'battery_level', 'location_group'], axis=1, inplace=True)
+    
+    #For testing so that everything will run quickly
+    df = df.head(n)
+    
+    #Remove repeated data
+    df['time_group_seconds'] =(pd.to_datetime(df['time_group']) - datetime.datetime(1970,1,1)).dt.total_seconds()
+    df['date'] = pd.to_datetime(df['time_group']).dt.date
+    df = add_rounded_time(df) 
+    df = drop_repeated_data(df)
 
-    temp_df = df.head(100)
+    #Add columns for lat, long, count, and grid_location
+    
+    df = add_lat_long(df)
+    df['count'] = 1
+    df['grid_location'] = 0
 
-    new_df = add_lat_long(temp_df)
-    new_df['count'] = 1
-    new_df['grid_location'] = 0
-    new_df.drop(['location'], axis=1, inplace=True)
-    return new_df
-
+    
+    #Applies a location based on a grid over Oakland to each scooter
+    df = add_grid_location(df)
+    og_df = df
+    og_df = add_day_of_week(og_df)
+    og_df = add_rounded_time(og_df)
+    
+    #Reforms dataframe to calculate count of scooters in each grid location every 15 min
+    df = grid_count(df)
+    
+    #add id list and day of week
+    new_df = add_id_list(df, og_df)
+    new_df = add_day_of_week(new_df)
+    
+    new_df = add_idle_and_turnover(new_df)
+    
+    return new_df, og_df
 
 def add_lat_long(df):
-    loc_array = df['location']
     
-    loc_list= []
-    for i in loc_array:
-        loc_list.append(ast.literal_eval(i))
+    df["location"] = df.location.str.replace("'", "\"").map( lambda x: json.loads(x) )
     
-    df = pd.concat([df, pd.DataFrame(loc_list)], axis=1)
+    df["latitude"] = df["location"].map( lambda x:x["latitude"] )
+    df["longitude"] = df["location"].map( lambda x:x["longitude"] )
+    
+    df.drop(['location'], axis=1, inplace=True)
+
     df['latitude'] = df['latitude'].round(5)
     df['longitude'] = df['longitude'].round(5)
+    
     return df
 
+def add_rounded_time(df, interval=15):
+    '''
+    Adds a column with the rounded time to the interval specified.
+    
+    '''
+    df['time_of_day'] = pd.to_datetime(df['time_group_seconds'], unit='s').dt.round('15min')  
+
+    df_time = pd.to_datetime(df['time_of_day'])
+
+    df['time_of_day'] = (pd.to_datetime(df['date']) - datetime.datetime(1970,1,1)).dt.total_seconds() + df_time.dt.hour*3600+df_time.dt.minute*60 + df_time.dt.second
+    
+    
+    return df
+
+def drop_repeated_data(df):
+    '''
+    Removes repeated data based on id and time_group_seconds - this should cut the data down by more than half
+    '''
+    
+    df.drop_duplicates(subset=['id','time_of_day'], keep='first', inplace=True)
+    return df
+
+def add_grid_location(df, n=42):
+    
+    '''
+    Assigns each data point to a location on the grid according to its lat/long
+    '''
+    
+    top_right = [df['latitude'].max(), df['longitude'].max()]
+    top_left = [df['latitude'].min(), df['longitude'].min()]
+    
+    grid = get_geojson_grid(top_right, top_left, n)
+    
+    for i, box in enumerate(grid):
+        upper_right = box["properties"]["upper_right"]
+        lower_left = box["properties"]["lower_left"]
+    
+        mask = (
+            (df.latitude <= upper_right[1]) & (df.latitude >= lower_left[1]) &
+            (df.longitude <= upper_right[0]) & (df.longitude >= lower_left[0])
+           )
+    
+        column_name = 'grid_location'
+        df.loc[mask, column_name] = i
+    
+    return df
 
 def get_geojson_grid(upper_right, lower_left, n=6):
     """Returns a grid of geojson rectangles, and computes the exposure in each section of the grid based on the vessel data.
@@ -107,175 +178,83 @@ def get_geojson_grid(upper_right, lower_left, n=6):
 
     return all_boxes
 
-
-def add_grid_location(df, n=42):
-    
-    '''
-    
-    Assigns each data point to a location on the grid according to its lat/long
-    
-    '''
-    
-    
-    top_right = [df['latitude'].max(), df['longitude'].max()]
-    top_left = [df['latitude'].min(), df['longitude'].min()]
-    
-    grid = get_geojson_grid(top_right, top_left, n=42)
-    
-    for i, box in enumerate(grid):
-        upper_right = box["properties"]["upper_right"]
-        lower_left = box["properties"]["lower_left"]
-    
-        mask = (
-            (df.latitude <= upper_right[1]) & (df.latitude >= lower_left[1]) &
-            (df.longitude <= upper_right[0]) & (df.longitude >= lower_left[0])
-           )
-    
-        column_name = 'grid_location'
-        df.loc[mask, column_name] = i
-    
-    return df
-
-
-
-
-def add_time_chunk(df):
-    df['time_chunk'] = 0
-    for i, time in enumerate(df['time'].unique()):
-        df['time_chunk'][df['time'] == time] = i
-    return df
-
-
-
-def add_day_of_week(df):
-    df['date'] = pd.to_datetime(df['time']).dt.round("D")
-    df['day_of_week'] = df['date'].dt.day_name()
-    
-    return df
-
-
-def add_rounded_time(df, interval=15):
-    '''
-    Adds a column with the rounded time to the interval specified.
-    
-    '''
-    df['rounded_time'] = pd.to_datetime(df['time']).dt.round('15min')  
-    #df['rounded_time'] = pd.to_datetime(df['time']).dt.round("Min").apply(lambda dt: datetime.datetime(dt.year, dt.month, dt.day, dt.hour,15*round((float(dt.minute) + float(dt.second)/60) / interval)))
-    #df['rounded_time'] = pd.Series([val.time() for val in df['rounded_time']])
-    
-    df_time = pd.to_datetime(df["rounded_time"])
-
-    df['rounded_time'] = df_time.dt.hour*60+df_time.dt.minute*60 + df_time.dt.second
-    
-    
-    return df
-
-
-
-def add_wait_time(df):
-    '''
-    Adds a column that tells how long a scooter has been waiting in a location
-    
-    '''
-    final_df = pd.DataFrame()
-    for i in range(len(df['id'].unique())):
-        
-        # set this df to all the data points with the same id
-        temp_df = df[df['id'] == df['id'].unique()[i]]
-        
-        
-        for j in range(len(temp_df['latitude'].unique())):
-            
-            # set this df to iterate through all of the unique lats from the temp data set
-            same_lat_long_df = temp_df[temp_df['latitude'] == temp_df['latitude'].iloc[j]]
-        
-            # create new column 'wait_time' that is the difference in time between the first and last datapoints
-            same_lat_long_df['wait_time'] = pd.to_datetime(same_lat_long_df['time']).iloc[-1] - pd.to_datetime(same_lat_long_df['time']).iloc[0]
-            
-            #append the new column to the output df
-            final_df = final_df.append(same_lat_long_df)
-    
-    return final_df
-
-
-
-
-
-def drop_repeated_data(df):
-    '''
-    Removes repeated data based on id and rounded_time - this should cut the data down by more than half
-    '''
-    
-    df.drop_duplicates(subset=['id','rounded_time'], keep='first', inplace=True)
-    return df
-
-
-df = get_data()
-df = add_day_of_week(df)
-df = add_grid_location(df)
-df = add_rounded_time(df)
-df = add_wait_time(df)
-df = drop_repeated_data(df)
-
-
 def grid_count(df, n=42):
     '''
     For a given time, day of the week create df of number of scooters in each grid location
     '''
     
+    #COMBINE UNIQUE DATE AND UNIQUE ROUNDED TIME INTO 1 LOOP INSTEAD OF 2
+    
     new_df = pd.DataFrame()
-    for unique_date in df['date'].unique():
-        for unique_rounded_time in df['rounded_time'].unique():
-            for unique_grid_location in range(n**2):
-                if ((df['date'] == unique_date) & (df['rounded_time'] == unique_rounded_time) & (df['grid_location'] == unique_grid_location)).any():
-                    continue
-                else:
-                    #print (unique_grid_location)
-                    new_df = new_df.append({'rounded_time':unique_rounded_time, 'grid_location':unique_grid_location, 'date':unique_date}, ignore_index=True)
+    for unique_rounded_time in df['time_of_day'].unique():
+        for unique_grid_location in range(n**2):
+            if ((df['time_of_day'] == unique_rounded_time) & (df['grid_location'] == unique_grid_location)).any():
+                continue
+            else:
+                new_df = new_df.append({'time_of_day':unique_rounded_time, 'grid_location':unique_grid_location}, ignore_index=True)
     new_df['grid_location'] = new_df['grid_location'].astype(int)                
     
-    df3 = pd.concat([df,new_df])
-    df3 = df3.fillna(0)
-    df3 = df3.sort_values(by='grid_location')
+    df = df.groupby(['time_of_day', 'grid_location']).size().reset_index(name='counts')
+    df3 = pd.concat([df,new_df], sort=False)
+    df3.fillna(value=0, inplace=True)
+    df3.sort_values(by=['grid_location', 'time_of_day'], inplace=True)
     #for a given date and rounded time - check to see if there is a grid location, if not set count to 0.
     
-    #df3 = df3.groupby(['rounded_time', 'grid_location', 'day_of_week', 'date']).size().reset_index(name='counts')
     #df = df.groupby(['grid_location']).agg(['count'])
     return df3
 
-
-
-new_df = grid_count(df)
-new_df
-#df3 = pd.concat([df,new_df])
-#df3.drop_duplicates(subset=['grid_location', 'col3'], inplace=True, keep='last')
-new_df = new_df.groupby(['rounded_time', 'grid_location', 'date'], as_index=False)[['count']].sum()
-
-
-
-def MMVP(df):
-    '''
-    even more mvp than mvp
-    '''
+def add_day_of_week(df):
     
-    y = df['count']
-    X = df.drop('count', axis=1)
+    df['date'] = pd.to_datetime(df['time_of_day'], unit='s').dt.date
     
-    X_train, X_test, y_train, y_test = train_test_split(X, y, shuffle=False)
+    #df['date'] = pd.to_datetime(df['time_of_day'], unit='s').dt.round("D")
+    df['day_of_week'] = pd.to_datetime(df['date']).dt.day_name()
     
     
-    linreg=LinearRegression()
-    linreg.fit(X_train, y_train)
-    
-    y_pred = linreg.predict(X_test).reshape(-1,1)
-    y_test = np.array(y_test).reshape(-1,1)
-    
-    #print(y_pred - y_test)
-    #print (np.shape(y_pred), np.shape(y_test))
-    
-    return linreg.score(y_pred, y_test)
+    return df
 
+def add_id_list(df, og_df):
 
-xdf = new_df.drop(['date'], axis=1)
+    g = og_df.groupby(['grid_location', 'time_of_day'])['id'].apply(list).reset_index(name='id_list')
 
-MMVP(xdf)
+    merger_df = pd.merge(df, g, on=['grid_location', 'time_of_day'], how='outer')
+    
+    isnull = merger_df.id_list.isnull()
+
+    merger_df.loc[isnull, 'id_list'] = [ [[]] * isnull.sum() ]
+    
+    return merger_df
+
+def add_idle_and_turnover(merger_df):
+    
+    group1_master = pd.DataFrame()
+    group2_master = pd.DataFrame()
+    for grid_location in merger_df['grid_location'].unique():
+        
+        group1 = merger_df[merger_df['grid_location']==grid_location].iloc[:-1]
+        group1.reset_index(inplace=True)
+        group1_master = group1_master.append(group1, ignore_index=True)
+        
+        group2 = merger_df[merger_df['grid_location']==grid_location].iloc[1:]
+        group2.reset_index(inplace=True)
+        group2_master = group2_master.append(group2, ignore_index=True)
+
+    df_id_list = group1_master.merge(group2_master, how='outer', left_index=True, right_index=True)
+    
+    df_id_list['idle'] = df_id_list.apply(lambda x: [i for i in x['id_list_x'] if i.lower() in x['id_list_y']], axis=1)
+    
+    df_id_list['turn_over'] = df_id_list.apply(lambda x: [i for i in x['id_list_y'] if i.lower() not in x['id_list_x']], axis=1)
+    
+    df_id_list['num_idle_15min'] = df_id_list['idle'].str.len()
+    df_id_list['num_turn_over_15min'] = df_id_list['turn_over'].str.len()
+    
+    
+    df_id_list['time'] = df_id_list['time_of_day_y'] - (pd.to_datetime(df_id_list['date_y']) - datetime.datetime(1970,1,1)).dt.total_seconds()
+    
+    df_id_list.drop(['index_x','time_of_day_x','grid_location_x','counts_x', 'id_list_x', 'date_x', 'day_of_week_x'], axis=1, inplace=True)
+    df_id_list = df_id_list.rename(index=str, columns={"time_of_day_y": "time_of_day", "grid_location_y":"grid_location", "counts_y":"counts", "id_list_y":"id_list", "date_y":"date", "day_of_week_y":"day_of_week"})
+
+    
+    return df_id_list
+
+df, og_df = get_data()
