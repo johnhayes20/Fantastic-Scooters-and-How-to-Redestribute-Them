@@ -11,7 +11,7 @@ INSERT GET REQUEST HERE
 - Once you have editedd the bird_api.py file with your information you will need to specify the lat and long in that file of where you would like the center of your API ping to be. The API will only return the scooters in a predetermined area around that location. If you want more than that use the for loop in bird_api.py, but be sure not to request access too often.
 
 Mapping:
-- If you want to make a map of your data stored in the csv, first run it through data_clean.py and then through map.py. This will require you to have a couple of libraries. You will need to pip install folium.
+- If you want to make a map of your data stored in the csv, first run it through data_clean.py and then through map.py. This will require you to have a couple of libraries specifically folium.
 
 
 
